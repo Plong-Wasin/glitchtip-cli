@@ -1,0 +1,12 @@
+{
+  "name": "glitchtip-cli",
+  "interface": { "displayName": "GlitchTip CLI" },
+  "plugins": [
+    {
+      "name": "glitchtip-cli",
+      "source": { "source": "local", "path": "./plugins/glitchtip-cli" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Developer Tools"
+    }
+  ]
+}

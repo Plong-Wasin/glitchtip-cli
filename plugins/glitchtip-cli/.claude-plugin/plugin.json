@@ -1,0 +1,8 @@
+{
+  "name": "glitchtip-cli",
+  "description": "Triage GlitchTip issues, events, logs and performance data through the glitchtip CLI",
+  "author": {
+    "name": "Wasin Phungwigrai"
+  },
+  "license": "MIT"
+}

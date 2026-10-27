@@ -1,0 +1,15 @@
+{
+  "name": "glitchtip-cli",
+  "description": "Triage GlitchTip issues, events, logs and performance data through the glitchtip CLI",
+  "author": {
+    "name": "Wasin Phungwigrai"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "GlitchTip",
+    "shortDescription": "Triage GlitchTip issues, logs and performance via glitchtip",
+    "developerName": "Wasin Phungwigrai",
+    "category": "Developer Tools",
+    "capabilities": []
+  }
+}

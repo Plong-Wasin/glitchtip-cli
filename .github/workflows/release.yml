@@ -1,0 +1,43 @@
+# Builds dist/ on every push to main and publishes main + dist/ to the `release`
+# branch, so `npm install -g git+https://...#release` works without a build step.
+# `release` is force-pushed by this workflow only; never commit to it by hand.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: Publish main + dist/ to the release branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --detach
+          git add -f dist
+          git commit -m "Release build of ${GITHUB_SHA::7}"
+          git push --force origin HEAD:refs/heads/release

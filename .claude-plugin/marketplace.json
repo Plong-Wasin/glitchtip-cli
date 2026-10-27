@@ -1,0 +1,12 @@
+{
+  "name": "glitchtip-cli",
+  "description": "Skills for the glitchtip GlitchTip MCP client",
+  "owner": { "name": "Wasin Phungwigrai" },
+  "plugins": [
+    {
+      "name": "glitchtip-cli",
+      "source": "./plugins/glitchtip-cli",
+      "description": "Triage GlitchTip issues, events, logs and performance data through the glitchtip CLI"
+    }
+  ]
+}
