@@ -1,7 +1,7 @@
 {
   "name": "glitchtip-cli",
-  "version": "0.1.0",
-  "description": "Command-line client for the GlitchTip MCP server (issues, events, logs, performance)",
+  "version": "0.2.0",
+  "description": "Command-line client for the GlitchTip REST API (issues, events, logs, performance)",
   "type": "module",
   "bin": {
     "glitchtip": "./dist/glitchtip.js"

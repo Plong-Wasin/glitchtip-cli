@@ -1,107 +1,122 @@
-// MCP over HTTP (streamable transport): initialize once per process, then send
-// JSON-RPC requests to <base>/mcp with the profile's bearer token.
+// GlitchTip REST API client: bearer-token requests to <base>/api/0/..., JSON in
+// and out, cursor pagination through the Link header.
 
 import { CliError } from '../utils/errors.js';
-import { PROTOCOL_VERSION, VERSION } from '../utils/version.js';
+import { VERSION } from '../utils/version.js';
 import type { Profile } from '../utils/config.js';
-import { refreshAccessToken } from '../auth/oauth.js';
-import type { JsonRpcMessage, ToolResult } from './types.js';
 
-let rpcId = 0;
-let sessionId: string | undefined;
-let initialized = false;
+export type QueryValue = string | number | boolean | null | undefined | (string | number)[];
+export type Query = Record<string, QueryValue>;
 
-function bearerToken(profile: Profile): string {
-  const token = process.env.GLITCHTIP_TOKEN || profile.token || profile.oauth?.accessToken;
-  if (!token) throw new CliError(`Profile "${profile.name}" is not signed in. Run \`glitchtip auth login ${profile.name}\`.`);
-  return token;
+export interface ApiOptions {
+  query?: Query;
+  body?: unknown;
 }
 
-async function post(profile: Profile, body: unknown): Promise<Response> {
-  const url = `${profile.url}/mcp`;
+export interface ApiResult<T> {
+  data: T;
+  /** Cursor of the next page, when the server says there is one. */
+  next?: string;
+}
+
+/** Hard stop for `--all`, so a huge project cannot loop forever. */
+export const MAX_PAGES = 50;
+
+export function buildUrl(profile: Profile, path: string, query: Query = {}): string {
+  const url = new URL(profile.url + path);
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null || value === '') continue;
+    // Arrays repeat the key (?id=1&id=2), which is how the API takes lists.
+    for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, String(item));
+  }
+  return url.toString();
+}
+
+// `Link: <...>; rel="next"; results="true"; cursor="abc"` (Sentry-style, which GlitchTip follows).
+export function nextCursor(link: string | null): string | undefined {
+  if (!link) return undefined;
+  for (const part of link.split(/,\s*(?=<)/)) {
+    if (!/rel="next"/.test(part)) continue;
+    if (/results="false"/.test(part)) return undefined;
+    const match = /cursor="([^"]+)"/.exec(part) ?? /[?&]cursor=([^&>]+)/.exec(part);
+    return match ? decodeURIComponent(match[1]!) : undefined;
+  }
+  return undefined;
+}
+
+function errorDetail(body: string): string {
   try {
-    return await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${bearerToken(profile)}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-        'MCP-Protocol-Version': PROTOCOL_VERSION,
-        'User-Agent': `glitchtip-cli/${VERSION}`,
-        ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
-      },
-      body: JSON.stringify(body),
+    const parsed = JSON.parse(body) as { detail?: unknown; message?: unknown };
+    const detail = parsed.detail ?? parsed.message;
+    if (typeof detail === 'string') return detail.replace(/\.+$/, ''); // callers add their own punctuation
+    return JSON.stringify(parsed).slice(0, 500);
+  } catch {
+    return body.slice(0, 300);
+  }
+}
+
+export async function api<T = unknown>(profile: Profile, method: string, path: string, options: ApiOptions = {}): Promise<ApiResult<T>> {
+  const url = buildUrl(profile, path, options.query);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${profile.token}`,
+    Accept: 'application/json',
+    'User-Agent': `glitchtip-cli/${VERSION}`,
+  };
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
   } catch (error) {
     const cause = error instanceof Error ? (error.cause as Error | undefined) : undefined;
     throw new CliError(`Cannot reach ${url}: ${cause?.message || (error as Error).message}`);
   }
-}
 
-// Sends one request; on 401 with an OAuth profile, refreshes the token and retries once.
-async function send(profile: Profile, body: unknown): Promise<Response> {
-  let response = await post(profile, body);
-  if (response.status === 401 && !process.env.GLITCHTIP_TOKEN && !profile.token && (await refreshAccessToken(profile))) {
-    response = await post(profile, body);
+  const text = await response.text();
+  if (!response.ok) {
+    const detail = errorDetail(text);
+    switch (response.status) {
+      case 401:
+        throw new CliError(`401 Unauthorized for profile "${profile.name}" (${profile.url}): ${detail}. Check the API token (\`glitchtip auth check\`).`);
+      case 403:
+        throw new CliError(`403 Forbidden: ${detail}. The token may lack a scope for ${method} ${path}.`);
+      case 404:
+        throw new CliError(`404 Not found: ${method} ${path} (${detail}).`);
+      case 429: {
+        const retry = response.headers.get('retry-after');
+        throw new CliError(`429 Too Many Requests.${retry ? ` Retry after ${retry}s.` : ''}`);
+      }
+      default:
+        throw new CliError(`HTTP ${response.status} for ${method} ${path}: ${detail}`);
+    }
   }
-  if (response.status === 401) {
-    const fix = profile.token || process.env.GLITCHTIP_TOKEN ? 'Check the token' : `Run \`glitchtip auth login ${profile.name}\``;
-    throw new CliError(`401 Unauthorized for profile "${profile.name}" (${profile.url}). ${fix}.`);
+
+  const data = (text ? JSON.parse(text) : null) as T;
+  return { data, next: nextCursor(response.headers.get('link')) };
+}
+
+/**
+ * GET a list endpoint. By default returns one page; with `all` follows the
+ * cursor until the server has no more (capped at MAX_PAGES).
+ */
+export async function list<T>(profile: Profile, path: string, query: Query, options: { all?: boolean } = {}): Promise<{ items: T[]; next?: string }> {
+  const items: T[] = [];
+  let cursor = typeof query.cursor === 'string' ? query.cursor : undefined;
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const result = await api<T[]>(profile, 'GET', path, { query: { ...query, cursor } });
+    items.push(...(Array.isArray(result.data) ? result.data : []));
+    cursor = result.next;
+    if (!options.all || !cursor) break;
   }
-  if (response.status === 403) throw new CliError('403 Forbidden. The signed-in user lacks access to this resource.');
-  if (response.status === 429) {
-    const retry = response.headers.get('retry-after');
-    throw new CliError(`429 Too Many Requests.${retry ? ` Retry after ${retry}s.` : ''}`);
-  }
-  return response;
+  return { items, next: cursor };
 }
 
-async function ensureSession(profile: Profile): Promise<void> {
-  if (initialized) return;
-  const response = await send(profile, {
-    jsonrpc: '2.0',
-    id: ++rpcId,
-    method: 'initialize',
-    params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'glitchtip-cli', version: VERSION } },
-  });
-  if (!response.ok) throw new CliError(`HTTP ${response.status} from ${profile.url}/mcp: ${(await response.text()).slice(0, 500)}`);
-  sessionId = response.headers.get('mcp-session-id') ?? undefined;
-  await response.text();
-  initialized = true;
-  await (await send(profile, { jsonrpc: '2.0', method: 'notifications/initialized' })).text();
-}
-
-function parseSse(body: string): JsonRpcMessage {
-  const payloads = body.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim());
-  const messages = payloads.filter(Boolean).map((p) => JSON.parse(p) as JsonRpcMessage);
-  const reply = messages.find((m) => 'result' in m || 'error' in m);
-  if (!reply) throw new CliError('Server sent an event stream without a JSON-RPC reply.');
-  return reply;
-}
-
-export async function rpc<T = unknown>(profile: Profile, method: string, params: unknown): Promise<T> {
-  await ensureSession(profile);
-  const response = await send(profile, { jsonrpc: '2.0', id: ++rpcId, method, params });
-  const body = await response.text();
-  if (!response.ok) throw new CliError(`HTTP ${response.status} from ${profile.url}/mcp: ${body.slice(0, 500)}`);
-  const message: JsonRpcMessage = (response.headers.get('content-type') || '').includes('text/event-stream')
-    ? parseSse(body)
-    : JSON.parse(body);
-  if (message.error) throw new CliError(`MCP error ${message.error.code}: ${message.error.message}`);
-  return message.result as T;
-}
-
-// Optional arguments the caller left unset must not reach the server.
-function drop(args: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
-}
-
-export async function callTool(profile: Profile, tool: string, args: Record<string, unknown>): Promise<ToolResult> {
-  const result = await rpc<ToolResult>(profile, 'tools/call', { name: tool, arguments: drop(args) });
-  if (result.isError) throw new CliError(toolText(result) || `${tool} failed.`);
-  return result;
-}
-
-export function toolText(result: ToolResult): string {
-  return (result.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+/** Numeric id of a project, which several organization-level endpoints require instead of the slug. */
+export async function projectId(profile: Profile, org: string, slug: string): Promise<number> {
+  const { data } = await api<{ id: string }>(profile, 'GET', `/api/0/projects/${org}/${slug}/`);
+  return Number(data.id);
 }

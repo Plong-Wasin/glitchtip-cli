@@ -1,6 +1,6 @@
 {
   "name": "glitchtip-cli",
-  "description": "Skills for the glitchtip GlitchTip MCP client",
+  "description": "Skills for the glitchtip GlitchTip REST API client",
   "owner": { "name": "Wasin Phungwigrai" },
   "plugins": [
     {

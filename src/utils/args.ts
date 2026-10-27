@@ -7,22 +7,15 @@ export function readStdin(): string {
   return readFileSync(0, 'utf8');
 }
 
-// key=value pairs for `glitchtip call`; values parse as JSON when they can.
-export function parseKeyValues(pairs: string[]): Record<string, unknown> {
-  const args: Record<string, unknown> = {};
+// key=value pairs for `glitchtip api`; every value stays a string (they become query parameters).
+export function parsePairs(pairs: string[]): Record<string, string> {
+  const result: Record<string, string> = {};
   for (const pair of pairs) {
     const eq = pair.indexOf('=');
-    if (eq < 1) throw new CliError(`Expected key=value, got "${pair}".`);
-    const raw = pair.slice(eq + 1);
-    let value: unknown;
-    try {
-      value = JSON.parse(raw);
-    } catch {
-      value = raw;
-    }
-    args[pair.slice(0, eq)] = value;
+    if (eq < 1) throw new CliError(`Expected key=value, got "${pair}".`, 2);
+    result[pair.slice(0, eq)] = pair.slice(eq + 1);
   }
-  return args;
+  return result;
 }
 
 export function requireArg(value: string | undefined, usage: string): string {
